@@ -13,6 +13,44 @@
   --panel:#FFFFFF; --panel-alt:#F5F7F5; --grey:#B7BEB7; --grey-soft:#EFF1EE; --line:#E2E6E2; --line-strong:#D3D9D3;
   --bg:#F7F9F7;
 }
+/* White stroke halo behind choropleth map labels (district/block names
+   drawn as a scattergeo text trace) - Plotly only sets fill/font-size
+   inline on these <text> elements, never stroke/paint-order, so this
+   rule layers a legibility halo without fighting Plotly's own styling.
+   Needed because the map's bucket fills are medium-toned (green/
+   yellow/red/grey), and no single flat text color read well against
+   all of them without this.
+   Scoped to g.scatterlayer specifically (the label trace's own layer),
+   NOT a bare "#explore-map text" - that broader selector was ALSO
+   matching Plotly's own hover-tooltip text (g.hoverlayer text.nums),
+   giving the tooltip the same thick halo meant for small map labels
+   and making it look bold/chunky instead of its normal thin text.
+   Confirmed via the DOM: label text lives under g.trace.scattergeo /
+   g.scatterlayer, tooltip text lives under an entirely separate
+   g.hovertext / g.hoverlayer branch - this selector only reaches the
+   former.
+   pointer-events:none here is the hover-detachment fix - the label
+   trace's own `hoverinfo:'skip'` (set in drawChoroplethForKey) was
+   NOT enough on its own; confirmed directly that hovering near a
+   label still let Plotly's hover system treat the text trace as a
+   competing target, detaching the tooltip from the cursor instead of
+   anchoring it to the choropleth fill underneath. This makes the
+   label layer fully transparent to the mouse, so every hover always
+   resolves to the choropleth trace below it - restores the original
+   pre-label hover behavior. */
+#explore-map g.scatterlayer text{
+  pointer-events: none;
+  paint-order: stroke fill;
+  stroke: #ffffff;
+  /* em, not px - scales with each label's own font-size (which varies
+     a lot: 5-11px depending on district/block polygon area). A fixed
+     px stroke looked fine at the larger district sizes but became a
+     bulky white "chip" rather than a thin outline at the smaller
+     block-level sizes - this keeps the halo visually proportional at
+     every size. */
+  stroke-width: 0.18em;
+  stroke-linejoin: round;
+}
 *{box-sizing:border-box;}
 body{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
 .serif{ font-family:"Iowan Old Style","Palatino Linotype",Georgia,serif; }
@@ -28,6 +66,10 @@ h1{ font-size:clamp(22px,4vw,30px); margin:0 0 4px; font-weight:600; }
 .navfield select#sel-quarter{ font-weight:700; color:var(--primary); border-color:var(--primary); }
 .crumbs{ font-size:13.5px; color:var(--ink-soft); margin-top:14px; }
 .crumbs b{ color:var(--ink); font-weight:600; }
+.tab-switcher{ display:flex; gap:4px; background:var(--panel-alt); border:1px solid var(--line-strong); border-radius:10px; padding:4px; width:fit-content; margin-top:20px; }
+.tab-btn{ font-family:inherit; font-size:14px; font-weight:600; padding:8px 18px; border:none; border-radius:7px; background:transparent; color:var(--ink-soft); cursor:pointer; transition:background .15s,color .15s; }
+.tab-btn.active{ background:var(--primary); color:#fff; }
+.tab-btn:not(.active):hover{ background:var(--line); }
 section{ margin-top:30px; }
 .section-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px; flex-wrap:wrap; gap:8px; }
 .section-head h2{ font-size:20px; font-weight:600; margin:0; }
@@ -45,6 +87,19 @@ section{ margin-top:30px; }
 .kpi-box .big{ font-size:26px; font-weight:700; }
 .kpi-box .caption{ font-size:11.5px; color:var(--ink-soft); margin-top:6px; }
 .kpi-box .therm, .kpi-box .caption{ width:100%; }
+.comparison-table{ width:100%; border-collapse:collapse; font-size:14px; }
+.comparison-table th{ text-align:left; font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); padding:8px 12px; border-bottom:2px solid var(--line-strong); white-space:nowrap; }
+.comparison-table td{ padding:10px 12px; border-bottom:1px solid var(--line); }
+.comparison-table tr:last-child td{ border-bottom:none; }
+.comparison-table tr.cmp-overall-row td{ font-weight:700; border-top:2px solid var(--line-strong); }
+.comparison-table td.cmp-val{ font-weight:600; border-radius:6px; }
+.comparison-table td.cmp-val.green{ background:var(--primary-soft); color:var(--primary); }
+.comparison-table td.cmp-val.yellow{ background:var(--gold-soft); color:#8a6417; }
+.comparison-table td.cmp-val.red{ background:var(--low-soft); color:var(--low); }
+.agree-flag{ font-size:12px; font-weight:700; padding:3px 9px; border-radius:20px; white-space:nowrap; }
+.agree-flag.agree-close{ background:var(--primary-soft); color:var(--primary); }
+.agree-flag.agree-moderate{ background:var(--gold-soft); color:#8a6417; }
+.agree-flag.agree-large{ background:var(--low-soft); color:var(--low); }
 .big-plain{ flex:1; display:flex; align-items:center; justify-content:center; font-size:26px; font-weight:700; }
 .therm{ margin-top:10px; height:14px; border-radius:999px; background:var(--grey-soft); position:relative; overflow:visible; }
 .therm .fill{ height:100%; border-radius:999px; }
@@ -127,7 +182,7 @@ tbody tr.me{ background:var(--primary-soft); font-weight:700; }
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
       <div>
         <h1 class="serif">CLF Financial Health Tracker</h1>
-        <p class="hint">Operational Self-Sufficiency &middot; Loan Disbursement &middot; Loan Repayment (OTR / Upto / PAR) &middot; Balance Sheets</p>
+        <p class="hint">Operational Self-Sufficiency &middot; Loan Disbursement &middot; Loan Repayment (OTR / Upto) &middot; Balance Sheets</p>
       </div>
       <button id="btn-export-excel" class="weight-btn" style="white-space:nowrap;">&#128190; Export to Excel</button>
     </div>
@@ -159,12 +214,10 @@ const IND_BY_KEY = {
   cash_balance: {label:'Cash Balance', unit:'rs', threshold:25000, monthly:true, desc:'Physical cash on hand — quarter-end value, flagged above Rs 25,000'},
   bank_balance: {label:'Bank Balance', unit:'rs', threshold:2500000, monthly:true, desc:'Bank balance — quarter-end value, flagged if all 3 months this quarter were above Rs 25 Lakh'},
   idle_funds:   {label:'Idle Funds', unit:'rs', monthly:true, desc:'Cash excess over Rs 25,000 (every month) + bank excess over Rs 25L (only in quarters flagged red), summed across the quarter'},
-  par:          {label:'Portfolio At Risk (PAR)', unit:'pct', composite:false, gaugeMax:100,
-                 zones:[{to:2,color:'#2F9C74'},{to:5,color:'#CE9C3C'},{to:100,color:'#C55F49'}], desc:'100 minus combined On-Time Repayment Rate — display only, excluded from Overall Score (redundant with OTR)'},
 };
 const COMPOSITE = Object.keys(IND_BY_KEY).filter(k=>IND_BY_KEY[k].composite!==false);
 const BUCKET_2GROUP = new Set([]);
-const BUCKET_INDS = ['oss','otr','upto','disb_pct','idle_funds','cash_balance','bank_balance','par'];
+const BUCKET_INDS = ['oss','otr','upto','disb_pct','idle_funds','cash_balance','bank_balance'];
 const BUCKET_COLOR = {green:'#2F9C74', yellow:'#CE9C3C', red:'#C55F49'};
 const CATEGORY_THRESHOLD_TEXT = {
   oss:          {green:'≥100%', yellow:'75–100%', red:'<75%'},
@@ -174,7 +227,6 @@ const CATEGORY_THRESHOLD_TEXT = {
   idle_funds:   {green:'₹0', yellow:'up to ₹5L', red:'>₹5L'},
   cash_balance: {green:'<₹20k', yellow:'₹20k–30k', red:'>₹30k'},
   bank_balance: {green:'0 of 3 months >₹25L', yellow:'1–2 of 3 months >₹25L', red:'all 3 months >₹25L'},
-  par:          {green:'<2%', yellow:'2–5%', red:'>5%'},
 };
 const MONTH_LABELS = {"2026-01":"Jan","2026-02":"Feb","2026-03":"Mar","2026-04":"Apr","2026-05":"May","2026-06":"Jun","2026-07":"Jul","2026-08":"Aug","2026-09":"Sep"};
 const MONTH_LABELS_FULL = {"2026-01":"Jan'26","2026-02":"Feb'26","2026-03":"Mar'26","2026-04":"Apr'26","2026-05":"May'26","2026-06":"Jun'26","2026-07":"Jul'26","2026-08":"Aug'26","2026-09":"Sep'26"};
@@ -182,7 +234,7 @@ const MONTH_LABELS_FULL = {"2026-01":"Jan'26","2026-02":"Feb'26","2026-03":"Mar'
 const SECTIONS = [
   {title:'Operational Self-Sufficiency', inds:['oss']},
   {title:'Loan Disbursement', inds:['disb_amount','disb_pct']},
-  {title:'Loan Repayment', inds:['otr','upto','par']},
+  {title:'Loan Repayment', inds:['otr','upto']},
   {title:'Balance Sheets', inds:['cash_balance','bank_balance','idle_funds']},
 ];
 
@@ -218,12 +270,58 @@ let MANIFEST=null, STATE_DATA=null, DISTRICT_DATA=null, BLOCK_DATA=null, CLF_DAT
 let SCOPE = 'state';
 let SCORING_SUMMARY = null;
 let CURRENT_QUARTER = null;
+// Three-way tab split: 'audit' (default), 'lokos', or 'comparison'.
+// Every fetched unit carries `by_period`/`series` (audit-sourced),
+// `lokos_by_period`/`lokos_series` (LokOS-sourced), AND
+// `compiled_by_period` (blended audit+LokOS percentiles/ranks, no raw
+// values of its own - see build_tracker_data.py's COMPILED_*_BY_Q) -
+// switching tabs doesn't refetch anything, just changes which one
+// currentPeriod()/monthStripHtml() read from. The 'comparison' tab
+// needs audit+lokos+compiled simultaneously (periodFor() below), not
+// just one - currentPeriod() itself falls back to by_period for any
+// tab other than 'lokos', which is fine for 'comparison' since the
+// handful of non-table callers of currentPeriod() (crumbs, the data-
+// gap note) are audit-framed anyway.
+let CURRENT_TAB = 'audit';
+// Which peer-group tier Table 2 (rank comparison) on the Comparison
+// tab is currently showing - 'block'/'district'/'state', restricted
+// per-view to the tiers that are actually meaningful for that scope
+// (see COMPARISON_SCOPE_OPTIONS in comparisonSectionHtml).
+let COMPARISON_SCOPE = 'state';
 
 // Every fetched unit (CLF/block/district/state) has the SAME shape:
-// {..., quarters, latest_quarter, quarter_months, by_period:{q:{...}}, series:{...}}.
-// This pulls out the row for whichever quarter is currently selected -
-// same "currentPeriod()" convention as the DAK Tracker's own by_period model.
-function currentPeriod(dataObj){ return dataObj.by_period[CURRENT_QUARTER]; }
+// {..., quarters, latest_quarter, quarter_months, by_period:{q:{...}}, series:{...},
+//  lokos_by_period:{q:{...}}, lokos_series:{...}, compiled_by_period:{q:{...}}}.
+// This pulls out the row for whichever quarter + tab is currently
+// selected - same "currentPeriod()" convention as the DAK Tracker's
+// own by_period model, extended with the tab dimension.
+function currentPeriod(dataObj){
+  const periods = (CURRENT_TAB === 'lokos' ? dataObj.lokos_by_period : dataObj.by_period) || {};
+  return periods[CURRENT_QUARTER] || {};
+}
+// Explicit-tab version for the Comparison tab, which needs all three
+// sources at once rather than whichever CURRENT_TAB happens to be.
+function periodFor(dataObj, tab){
+  const key = tab==='lokos' ? 'lokos_by_period' : tab==='compiled' ? 'compiled_by_period' : 'by_period';
+  return (dataObj[key] || {})[CURRENT_QUARTER] || {};
+}
+
+function tabSwitcherHtml(){
+  return `<div class="tab-switcher">
+    <button class="tab-btn ${CURRENT_TAB==='audit'?'active':''}" data-tab="audit">Audit</button>
+    <button class="tab-btn ${CURRENT_TAB==='lokos'?'active':''}" data-tab="lokos">LokOS</button>
+    <button class="tab-btn ${CURRENT_TAB==='comparison'?'active':''}" data-tab="comparison">Comparison</button>
+  </div>`;
+}
+function wireTabSwitcher(){
+  document.querySelectorAll('.tab-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if(btn.dataset.tab === CURRENT_TAB) return;
+      CURRENT_TAB = btn.dataset.tab;
+      refreshView();
+    });
+  });
+}
 // Display text only - "cumulative" is the real data key everywhere else
 // (by_period["cumulative"], scoring_summary.by_period["cumulative"], the
 // <option value="cumulative">) - this just controls how it READS on the
@@ -428,6 +526,12 @@ function thermometerHtml(ind, value, bucket){
 // to that quarter's 3 months via `quarter_months`.
 // ============================================================================
 function monthStripHtml(ind, dataObj){
+  // LokOS tab only (2026-10-05): cash_balance/bank_balance/idle_funds
+  // are now audit-sourced (TB columns, one quarterly reading - see
+  // build_tracker_data.py) on the Audit tab, so there's no month-level
+  // detail to show there any more. The monthly breakdown only applies
+  // to the LokOS tab's F01-sourced version of these same indicators.
+  if(CURRENT_TAB !== 'lokos') return '';
   // Quarter-specific views only - the month-by-month strip doesn't map
   // cleanly onto "cumulative" (cash/bank there are just the latest
   // quarter's value, idle funds is a sum across all 3 quarters, not any
@@ -435,7 +539,7 @@ function monthStripHtml(ind, dataObj){
   // some approximated form.
   if(CURRENT_QUARTER === 'cumulative') return '';
   const months = dataObj.quarter_months[CURRENT_QUARTER];
-  const seriesVals = dataObj.series[ind] || {};
+  const seriesVals = (dataObj.lokos_series || {})[ind] || {};
   return `<div class="month-strip">${months.map(m=>
     `<div class="m"><div class="mlabel">${MONTH_LABELS[m]}</div><div class="mval">${fmtRsShort(seriesVals[m])}</div></div>`
   ).join('')}</div>`;
@@ -524,22 +628,22 @@ function disbPairedBarHtml(row){
 // the current quarter's row (via currentPeriod) and the raw monthly
 // `series` (for the month-strip) are pulled from it.
 // ============================================================================
-// Explains blank OTR/UPTO/PAR/disb_pct/OSS cells rather than leaving
+// Explains blank OTR/UPTO/disb_pct/OSS cells rather than leaving
 // them unexplained - these are now scored as the worst performer
-// (0, or 100 for PAR) instead of being excluded from ranking, per
-// user decision, so the blank display value needs a reason attached
-// or it looks like an error. Two independent notes since the two
-// groups have genuinely different causes (confirmed directly against
-// raw audit data): otr/upto/par/disb_pct go blank together because
-// the CLF recorded zero loan demand in every tracked quarter (or was
-// never audited in this window at all); OSS goes blank because the
+// (0) instead of being excluded from ranking, per user decision, so
+// the blank display value needs a reason attached or it looks like
+// an error. Two independent notes since the two groups have
+// genuinely different causes (confirmed directly against raw audit
+// data): otr/upto/disb_pct go blank together because the CLF
+// recorded zero loan demand in every tracked quarter (or was never
+// audited in this window at all); OSS goes blank because the
 // audit form's OSS sub-score wasn't reliably collected before Q4
 // statewide (a rollout-timing gap, unrelated to this CLF's own
 // activity) - conflating the two into one message would misattribute
 // the OSS gap to "no loan demand", which isn't the actual cause.
 function clfDataGapNoteHtml(row){
   const notes = [];
-  if(row.otr==null || row.upto==null || row.par==null || row.disb_pct==null){
+  if(row.otr==null || row.upto==null || row.disb_pct==null){
     notes.push('This CLF did not generate any loan demand in this time period. Hence, all repayment and disbursement metrics are null.');
   }
   if(row.oss==null){
@@ -612,7 +716,40 @@ function drawChoroplethForKey(containerId, rows, geojson, key, geoIdKey, labelKe
     zmin:0, zmax:2, featureidkey:`properties.${geoIdKey}`,
     colorscale:[[0,BUCKET_COLOR.green],[0.5,BUCKET_COLOR.yellow],[1,BUCKET_COLOR.red]],
     marker:{line:{color:'#fff', width:0.6}}, showscale:false,
-    text: rows.map(r=>`${r[labelKey]}: ${fmtInd(key, r[key])} (${r[bucketKey]||'no data'})`), hoverinfo:'text'};
+    text: rows.map(r=>`${r[labelKey]}: ${fmtInd(key, r[key])}`), hoverinfo:'text'};
+  // Always-visible name labels, layered on top of the choropleth -
+  // label_lon/label_lat are baked into the geojson properties (via
+  // shapely's representative_point(), not centroid() - centroid can
+  // land outside a concave/irregularly-shaped district or block,
+  // representative_point() is guaranteed to fall inside it). A
+  // separate scattergeo/text trace rather than Plotly choropleth
+  // annotations, since choropleth has no built-in always-on label
+  // option - hover (via the choropleth trace above) still carries the
+  // actual metric value, this trace is name-only so the two never
+  // show conflicting/duplicated text at once.
+  const featByGeoId = {};
+  (geojson.features||[]).forEach(f=> featByGeoId[f.properties[geoIdKey]] = f.properties);
+  // label_size is baked in per-feature (sqrt of polygon area, scaled to a
+  // 5-11px range) rather than one fixed size for every shape - Bihar's
+  // districts/blocks vary up to ~28x in area, so a single size either
+  // overflowed the smallest shapes or looked tiny on the largest ones.
+  const labelLons = [], labelLats = [], labelTexts = [], labelSizes = [];
+  locations.forEach((loc, i)=>{
+    const props = featByGeoId[loc];
+    if(props && props.label_lon!=null && props.label_lat!=null){
+      labelLons.push(props.label_lon); labelLats.push(props.label_lat);
+      labelTexts.push(rows[i][labelKey]);
+      labelSizes.push(props.label_size || 8);
+    }
+  });
+  // Dark text + a white CSS stroke halo (see the #explore-map text rule
+  // in <style>), not a single fixed color with no halo - the bucket
+  // fills (green/yellow/red, plus grey for "no data") are all
+  // medium-toned, so no single flat text color read well against every
+  // one of them. The white halo gives dark text a consistent light
+  // "stage" regardless of what's underneath.
+  const labelTrace = {type:'scattergeo', mode:'text', lon:labelLons, lat:labelLats, text:labelTexts,
+    textfont:{size:labelSizes, color:'#2b2b2b'}, hoverinfo:'skip', showlegend:false};
   if(legendEl){
     const th = CATEGORY_THRESHOLD_TEXT[key] || {};
     const labels = ['green','yellow','red'];
@@ -622,7 +759,7 @@ function drawChoroplethForKey(containerId, rows, geojson, key, geoIdKey, labelKe
     ).join('')}</div>`;
   }
   const layout = {margin:{t:0,b:0,l:0,r:0}, height:420, paper_bgcolor:'rgba(0,0,0,0)', geo:{fitbounds:'locations', visible:false}};
-  Plotly.newPlot(containerId, [trace], layout, {displayModeBar:false, responsive:true});
+  Plotly.newPlot(containerId, [trace, labelTrace], layout, {displayModeBar:false, responsive:true});
 }
 function drawTrendChartForKey(containerId, key, seriesSource, quarters, months){
   const ind = IND_BY_KEY[key];
@@ -803,8 +940,8 @@ async function navToClf(misId){
 // ============================================================================
 let categoryWeights = null;
 function weightModalHtml(){
-  const stateHint = 'Drag each slider to change how much that indicator counts toward every ranking table\'s Overall column, statewide, for ' + periodLabel(CURRENT_QUARTER) + '. Weights are relative, not fixed percentages. PAR and Loan Disbursement Amount aren\'t included (PAR duplicates On-Time Repayment Rate; Disbursement Amount is a magnitude, not a rate).';
-  const unitHint = `Drag each slider to change how much that indicator counts toward the Overall Score for ${periodLabel(CURRENT_QUARTER)}. Weights are relative, not fixed percentages. PAR and Loan Disbursement Amount aren't included (PAR duplicates On-Time Repayment Rate; Disbursement Amount is a magnitude, not a rate). Every ranking table on the page updates too.`;
+  const stateHint = 'Drag each slider to change how much that indicator counts toward every ranking table\'s Overall column, statewide, for ' + periodLabel(CURRENT_QUARTER) + '. Weights are relative, not fixed percentages. Loan Disbursement Amount isn\'t included (it\'s a magnitude, not a rate).';
+  const unitHint = `Drag each slider to change how much that indicator counts toward the Overall Score for ${periodLabel(CURRENT_QUARTER)}. Weights are relative, not fixed percentages. Loan Disbursement Amount isn't included (it's a magnitude, not a rate). Every ranking table on the page updates too.`;
   return `<div class="weight-modal-backdrop" id="weight-modal-backdrop"><div class="weight-modal">
     <div class="weight-modal-head"><h3>Choose Indicator Weights</h3><button class="weight-modal-close" id="btn-close-weights">&times;</button></div>
     <p class="weight-modal-hint">${SCOPE==='state' ? stateHint : unitHint}</p>
@@ -897,33 +1034,157 @@ function standingCardsHtml(row, scopes){
   }).join('') + `</div>`;
 }
 
+// ============================================================================
+// Comparison tab (2026-10-05): Audit/LokOS tabs show only metric
+// values; this tab holds the cross-source comparison + all
+// scoring/ranking, consolidated in one place rather than duplicated on
+// every tab. Two tables - value comparison (every indicator) and rank
+// comparison (every indicator + Overall, across whichever peer-group
+// tiers are meaningful at this SCOPE).
+// ============================================================================
+const COMPARISON_INDS = Object.keys(IND_BY_KEY);
+// Disb %/Amount are mirrored onto BOTH tabs from the same underlying
+// field (build_tracker_data.py's clf_full_lokos copies clf_full's
+// disb_pct/disb_amount directly, never recomputes them) - was F05-
+// sourced on both sides, now the audit-native CLF Audit Entry
+// scrape's loan_demand/disbursed amount (2026-10-12), but still THE
+// SAME figure on both tabs either way. They'll always show zero
+// delta, which isn't a real cross-check, so the delta/agreement-flag
+// columns are suppressed for these two rather than implying an
+// agreement that was never independently measured.
+const SAME_SOURCE_INDS = new Set(['disb_pct', 'disb_amount']);
+
+function agreementFlag(a, b){
+  if(a==null || b==null) return null;
+  const denom = Math.max(Math.abs(a), Math.abs(b), 1);
+  const diffPct = Math.abs(a-b) / denom * 100;
+  if(diffPct <= 10) return 'close';
+  if(diffPct <= 50) return 'moderate';
+  return 'large';
+}
+const AGREEMENT_LABEL = {close:'Close', moderate:'Moderate gap', large:'Large gap'};
+
+function comparisonValueTableHtml(auditRow, lokosRow){
+  const rows = COMPARISON_INDS.map(ind=>{
+    const meta = IND_BY_KEY[ind];
+    const av = auditRow[ind], lv = lokosRow[ind];
+    const aBucket = auditRow[ind+'_bucket'] || '', lBucket = lokosRow[ind+'_bucket'] || '';
+    const sameSource = SAME_SOURCE_INDS.has(ind);
+    let deltaCell = '<span class="hint">—</span>', flagCell = '<span class="hint">—</span>';
+    if(sameSource){
+      deltaCell = '<span class="hint">same source</span>';
+      flagCell = '<span class="hint">n/a</span>';
+    } else if(av!=null && lv!=null){
+      const delta = lv - av;
+      deltaCell = (delta>=0?'+':'−') + fmtInd(ind, Math.abs(delta));
+      const flag = agreementFlag(av, lv);
+      flagCell = `<span class="agree-flag agree-${flag}">${AGREEMENT_LABEL[flag]}</span>`;
+    }
+    return `<tr>
+      <td>${meta.label}</td>
+      <td class="cmp-val ${aBucket}">${fmtInd(ind, av)}</td>
+      <td class="cmp-val ${lBucket}">${fmtInd(ind, lv)}</td>
+      <td>${deltaCell}</td>
+      <td>${flagCell}</td>
+    </tr>`;
+  }).join('');
+  return `<table class="comparison-table">
+    <thead><tr><th>Indicator</th><th>Audit</th><th>LokOS</th><th>Delta</th><th>Agreement</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function comparisonRankTableHtml(auditRow, lokosRow, compiledRow, scope){
+  const inds = COMPOSITE.concat(['overall']);
+  const rankCell = (row, ind) => {
+    const rank = row ? row[`${ind}_${scope}_rank`] : null;
+    const n = row ? row[`${ind}_${scope}_n`] : null;
+    return rank!=null ? `${rank}${ord(rank)} <span class="hint">of ${n}</span>` : '—';
+  };
+  const rows = inds.map(ind=>{
+    const label = ind==='overall' ? 'Overall' : IND_BY_KEY[ind].label;
+    return `<tr${ind==='overall'?' class="cmp-overall-row"':''}>
+      <td>${label}</td>
+      <td>${rankCell(auditRow, ind)}</td>
+      <td>${rankCell(lokosRow, ind)}</td>
+      <td>${rankCell(compiledRow, ind)}</td>
+    </tr>`;
+  }).join('');
+  return `<table class="comparison-table">
+    <thead><tr><th>Indicator</th><th>Audit Rank</th><th>LokOS Rank</th><th>Compiled Rank</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function comparisonScopeToggleHtml(options){
+  return `<div class="tab-switcher" style="margin-top:0;">` + options.map(o=>
+    `<button class="tab-btn cmp-scope-btn ${COMPARISON_SCOPE===o.key?'active':''}" data-scope="${o.key}">${o.label}</button>`
+  ).join('') + `</div>`;
+}
+function wireComparisonScopeToggle(){
+  document.querySelectorAll('.cmp-scope-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      if(btn.dataset.scope === COMPARISON_SCOPE) return;
+      COMPARISON_SCOPE = btn.dataset.scope;
+      refreshView();
+    });
+  });
+}
+
+// level = 'clf'|'block'|'district'|'state' - controls which peer-group
+// tiers Table 2 offers, since e.g. a district has no "within block"
+// concept and a state has no peers to rank against at all (Table 2 is
+// omitted entirely there, Table 1 still applies to the state's own
+// aggregate values).
+const COMPARISON_SCOPE_OPTIONS_BY_LEVEL = {
+  clf: [{key:'block', label:'Within Block'}, {key:'district', label:'Within District'}, {key:'state', label:'Statewide'}],
+  block: [{key:'district', label:'Within District'}, {key:'state', label:'Statewide'}],
+  district: [{key:'state', label:'Statewide'}],
+  state: [],
+};
+function comparisonSectionHtml(dataObj, level){
+  const auditRow = periodFor(dataObj, 'audit');
+  const lokosRow = periodFor(dataObj, 'lokos');
+  const compiledRow = periodFor(dataObj, 'compiled');
+
+  const scopeOptions = COMPARISON_SCOPE_OPTIONS_BY_LEVEL[level] || [];
+  if(scopeOptions.length && !scopeOptions.find(o=>o.key===COMPARISON_SCOPE)){
+    COMPARISON_SCOPE = scopeOptions[0].key;
+  }
+
+  const table2Html = scopeOptions.length ? `
+    <section><div class="section-head"><h2 class="serif">Rank Comparison</h2><span class="hint">${periodLabel(CURRENT_QUARTER)}</span></div>
+      <div class="panel">
+        ${comparisonScopeToggleHtml(scopeOptions)}
+        <div style="margin-top:16px;overflow-x:auto;">${comparisonRankTableHtml(auditRow, lokosRow, compiledRow, COMPARISON_SCOPE)}</div>
+      </div></section>` : `
+    <section><div class="section-head"><h2 class="serif">Rank Comparison</h2></div>
+      <div class="panel"><p class="hint" style="margin:0;">A single state has no peer group to rank against - rank comparison applies at district, block, and CLF scope.</p></div></section>`;
+
+  return `
+    <section><div class="section-head"><h2 class="serif">Value Comparison</h2><span class="hint">${periodLabel(CURRENT_QUARTER)} &middot; audit vs LokOS, colored by the usual thresholds</span></div>
+      <div class="panel" style="overflow-x:auto;">${comparisonValueTableHtml(auditRow, lokosRow)}</div></section>
+    ${table2Html}`;
+}
+
 // ---------------------------------------------------------------- STATE view
 async function showState(){
   SCOPE='state'; DISTRICT_DATA=null; BLOCK_DATA=null; CLF_DATA=null;
   setCrumbs();
   const row = currentPeriod(STATE_DATA);
+  const districts = row.districts || [];
+  const isComparison = CURRENT_TAB === 'comparison';
   document.getElementById('app').innerHTML = `
-    ${indicatorSectionsHtml(STATE_DATA, true)}
-    ${explorePlaceTimeHtml(true)}
-    <section><div class="section-head"><h2 class="serif">District Ranking</h2><span class="hint">${periodLabel(CURRENT_QUARTER)} &mdash; all 38 districts &mdash; click a column to sort, click a row to open it</span></div>
-      <div class="panel">
-        <div style="display:flex;justify-content:flex-end;margin-bottom:10px;"><button id="btn-open-weights" class="weight-btn">&#9881;&#65039; Choose Indicator Weights</button></div>
-        <div id="district-rank-wrap">${rankingTableHtml('district-rank', row.districts, null, 'name', 'name')}</div>
-      </div></section>
-    <section><div class="section-head"><h2 class="serif">Top &amp; Bottom 10 CLFs Statewide</h2><span class="hint">${periodLabel(CURRENT_QUARTER)} &mdash; by Overall Score &mdash; click a row to open that CLF</span></div>
-      <div class="subsection-head" style="margin-top:0;">Top 10</div>
-      <div class="panel" id="top10-clf-wrap">${rankingTableHtml('top10-clf', row.top_clfs||[], null, 'mis_id', 'clf_name', [{key:'district', label:'District'},{key:'block', label:'Block'}], 'afterName')}</div>
-      <div class="subsection-head">Bottom 10</div>
-      <div class="panel" id="bottom10-clf-wrap">${rankingTableHtml('bottom10-clf', row.bottom_clfs||[], null, 'mis_id', 'clf_name', [{key:'district', label:'District'},{key:'block', label:'Block'}], 'afterName')}</div></section>`;
-  drawExploreSection(STATE_DATA, {rows:row.districts, geoLoader:loadGeoDistricts, geoIdKey:'district_name', labelKey:'name', rowIdKey:'district_geo_id', rowIdTransform:v=>v});
-  document.getElementById('btn-open-weights').addEventListener('click', openWeightModal);
-  wireSortableTable('district-rank', '#district-rank-wrap', navToDistrict);
-  const clfNav = misId=>{
-    const r = [...(row.top_clfs||[]), ...(row.bottom_clfs||[])].find(c=>String(c.mis_id)===String(misId));
-    if(r) navToClfFromState(r.mis_id, r.district, r.block);
-  };
-  wireSortableTable('top10-clf', '#top10-clf-wrap', clfNav);
-  wireSortableTable('bottom10-clf', '#bottom10-clf-wrap', clfNav);
+    ${tabSwitcherHtml()}
+    ${isComparison ? comparisonSectionHtml(STATE_DATA, 'state') : `
+      ${indicatorSectionsHtml(STATE_DATA, true)}
+      ${explorePlaceTimeHtml(true)}`}`;
+  wireTabSwitcher();
+  if(isComparison){
+    wireComparisonScopeToggle();
+  } else {
+    drawExploreSection(STATE_DATA, {rows:districts, geoLoader:loadGeoDistricts, geoIdKey:'district_name', labelKey:'name', rowIdKey:'district_geo_id', rowIdTransform:v=>v});
+  }
 }
 
 // ---------------------------------------------------------------- DISTRICT view
@@ -931,36 +1192,37 @@ async function showDistrict(){
   SCOPE='district'; BLOCK_DATA=null; CLF_DATA=null;
   setCrumbs();
   const row = currentPeriod(DISTRICT_DATA);
-  const blocksWithStateRank = row.blocks.map(b=>({...b, __state_rank: b.overall_state_rank}));
+  const blocks = row.blocks || [];
+  const isComparison = CURRENT_TAB === 'comparison';
   document.getElementById('app').innerHTML = `
-    ${indicatorSectionsHtml(DISTRICT_DATA, true)}
-    ${explorePlaceTimeHtml(true)}
-    ${scoringSectionHtml(row, [{label:'districts statewide', rankKey:'overall_state_rank', nKey:'overall_state_n'}])}
-    <section><div class="section-head"><h2 class="serif">Block Ranking</h2><span class="hint">${periodLabel(CURRENT_QUARTER)} &mdash; blocks within ${DISTRICT_DATA.name} &mdash; click a row to open that block</span></div>
-      <div class="panel" id="block-rank-wrap">${rankingTableHtml('block-rank', blocksWithStateRank, null, 'name', 'name', [{key:'__state_rank', label:'State Rank'}])}</div></section>`;
-  drawExploreSection(DISTRICT_DATA, {rows:row.blocks, geoLoader:loadGeoBlocks, geoIdKey:'block_id', labelKey:'name', rowIdKey:'block_id', rowIdTransform:v=>v});
-  document.getElementById('btn-open-weights').addEventListener('click', openWeightModal);
-  wireSortableTable('block-rank', '#block-rank-wrap', navToBlock);
+    ${tabSwitcherHtml()}
+    ${isComparison ? comparisonSectionHtml(DISTRICT_DATA, 'district') : `
+      ${indicatorSectionsHtml(DISTRICT_DATA, true)}
+      ${explorePlaceTimeHtml(true)}`}`;
+  wireTabSwitcher();
+  if(isComparison){
+    wireComparisonScopeToggle();
+  } else {
+    drawExploreSection(DISTRICT_DATA, {rows:blocks, geoLoader:loadGeoBlocks, geoIdKey:'block_id', labelKey:'name', rowIdKey:'block_id', rowIdTransform:v=>v});
+  }
 }
 
 // ---------------------------------------------------------------- BLOCK view
 async function showBlock(){
   SCOPE='block'; CLF_DATA=null;
   setCrumbs();
-  const row = currentPeriod(BLOCK_DATA);
-  const clfsWithRanks = row.clfs.map(c=>({...c, __district_rank: c.overall_district_rank, __state_rank: c.overall_state_rank}));
+  const isComparison = CURRENT_TAB === 'comparison';
   document.getElementById('app').innerHTML = `
-    ${indicatorSectionsHtml(BLOCK_DATA, true)}
-    ${explorePlaceTimeHtml(false)}
-    ${scoringSectionHtml(row, [
-      {label:'blocks in '+BLOCK_DATA.district, rankKey:'overall_district_rank', nKey:'overall_district_n'},
-      {label:'blocks statewide', rankKey:'overall_state_rank', nKey:'overall_state_n'},
-    ])}
-    <section><div class="section-head"><h2 class="serif">CLF Ranking</h2><span class="hint">${periodLabel(CURRENT_QUARTER)} &mdash; CLFs within ${BLOCK_DATA.name} &mdash; click a row to open that CLF</span></div>
-      <div class="panel" id="clf-rank-wrap">${rankingTableHtml('clf-rank', clfsWithRanks, null, 'mis_id', 'clf_name', [{key:'__district_rank', label:'District Rank'},{key:'__state_rank', label:'State Rank'}])}</div></section>`;
-  drawExploreSection(BLOCK_DATA, null);
-  document.getElementById('btn-open-weights').addEventListener('click', openWeightModal);
-  wireSortableTable('clf-rank', '#clf-rank-wrap', navToClf);
+    ${tabSwitcherHtml()}
+    ${isComparison ? comparisonSectionHtml(BLOCK_DATA, 'block') : `
+      ${indicatorSectionsHtml(BLOCK_DATA, true)}
+      ${explorePlaceTimeHtml(false)}`}`;
+  wireTabSwitcher();
+  if(isComparison){
+    wireComparisonScopeToggle();
+  } else {
+    drawExploreSection(BLOCK_DATA, null);
+  }
 }
 
 // ---------------------------------------------------------------- CLF view
@@ -968,24 +1230,22 @@ async function showClf(){
   SCOPE='clf';
   setCrumbs();
   const row = currentPeriod(CLF_DATA);
+  const isComparison = CURRENT_TAB === 'comparison';
+  // clfDataGapNoteHtml stays audit-only - its specific wording ("audit
+  // form's OSS sub-score...") doesn't apply to why a LokOS value or a
+  // compiled rank might be missing.
   document.getElementById('app').innerHTML = `
-    <section><div class="section-head"><h2 class="serif">${CLF_DATA.clf_name}</h2><span class="hint">MIS ID ${CLF_DATA.mis_id} &middot; ${CLF_DATA.block}, ${CLF_DATA.district}</span></div>${clfDataGapNoteHtml(row)}</section>
-    ${indicatorSectionsHtml(CLF_DATA, false)}
-    ${explorePlaceTimeHtml(false)}
-    ${scoringSectionHtml(row, [
-      {label:'CLFs in '+CLF_DATA.block, rankKey:'overall_block_rank', nKey:'overall_block_n'},
-      {label:'CLFs in '+CLF_DATA.district, rankKey:'overall_district_rank', nKey:'overall_district_n'},
-      {label:'CLFs statewide', rankKey:'overall_state_rank', nKey:'overall_state_n'},
-    ])}
-    <section><div class="section-head"><h2 class="serif">Ranking — Within ${CLF_DATA.block}</h2><span class="hint">${periodLabel(CURRENT_QUARTER)} &mdash; click a row to open that CLF</span></div>
-      <div class="panel" id="clf-peer-wrap">Loading&hellip;</div></section>`;
-  drawExploreSection(CLF_DATA, null);
-  document.getElementById('btn-open-weights').addEventListener('click', openWeightModal);
-  const blockSlug = document.getElementById('sel-block').value;
-  const peerBlock = await fetchJson(`data/blocks/${blockSlug}.json`);
-  const peerRow = currentPeriod(peerBlock);
-  document.getElementById('clf-peer-wrap').innerHTML = rankingTableHtml('clf-peer', peerRow.clfs, CLF_DATA.mis_id, 'mis_id', 'clf_name');
-  wireSortableTable('clf-peer', '#clf-peer-wrap', navToClf);
+    ${tabSwitcherHtml()}
+    <section><div class="section-head"><h2 class="serif">${CLF_DATA.clf_name}</h2><span class="hint">MIS ID ${CLF_DATA.mis_id} &middot; ${CLF_DATA.block}, ${CLF_DATA.district}</span></div>${CURRENT_TAB==='audit' ? clfDataGapNoteHtml(row) : ''}</section>
+    ${isComparison ? comparisonSectionHtml(CLF_DATA, 'clf') : `
+      ${indicatorSectionsHtml(CLF_DATA, false)}
+      ${explorePlaceTimeHtml(false)}`}`;
+  wireTabSwitcher();
+  if(isComparison){
+    wireComparisonScopeToggle();
+  } else {
+    drawExploreSection(CLF_DATA, null);
+  }
 }
 
 init();
