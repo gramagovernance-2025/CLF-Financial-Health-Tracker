@@ -1011,11 +1011,24 @@ def bucket_dist_pct(bucket_series, two_group):
 SUM_INDS = {"cash_balance", "bank_balance", "idle_funds", "disb_amount",
             "lokos_cash_balance", "lokos_bank_balance", "lokos_idle_funds"}
 
-def agg_unit_for_quarter(sub, level_name, name, district=None):
+# Indicators winsorized at the top 1% before averaging into a block/
+# district/state mean - a handful of CLFs with a genuinely extreme (but
+# not implausible-enough to be nulled by UPTO_OTR_IMPLAUSIBLE_CUTOFF)
+# UPTO value were dragging the state-level mean far above what any
+# typical CLF actually shows. The cap itself is computed once per
+# quarter from the full statewide CLF population (see caps= in
+# build_group_dfs_for_quarter), not separately within each small
+# block/district subgroup, where a 99th-percentile would be meaningless.
+WINSORIZE_TOP_PCT = {"upto": 0.99}
+
+def agg_unit_for_quarter(sub, level_name, name, district=None, caps=None):
     row = {"level": level_name, "name": name}
     if district: row["district"] = district
+    caps = caps or {}
     for ind in COMPOSITE_INDICATORS + ["disb_amount"]:
         vals = sub[ind].dropna()
+        if ind in caps and len(vals):
+            vals = vals.clip(upper=caps[ind])
         if len(vals):
             row[ind] = round(float(vals.sum() if ind in SUM_INDS else vals.mean()), 1)
         else:
@@ -1114,10 +1127,11 @@ def build_group_dfs_for_quarter(q, flat_by_q=None, block_series=None, district_s
     district_series = district_series if district_series is not None else district_series_lookup
     state_series = state_series if state_series is not None else state_series_lookup
     status_q = LATEST_Q if q == "cumulative" else q
+    caps = {ind: flat[ind].dropna().quantile(q_) for ind, q_ in WINSORIZE_TOP_PCT.items() if flat[ind].notna().any()}
 
     block_rows = []
     for (d, b), sub in flat.groupby(["district", "block"]):
-        r = agg_unit_for_quarter(sub, "block", b, district=d)
+        r = agg_unit_for_quarter(sub, "block", b, district=d, caps=caps)
         r["block_id"] = sub["block_id"].iloc[0] if pd.notna(sub["block_id"].iloc[0]) else None
         bs = block_series["bank_balance"].loc[(d, b)]
         r["bank_balance_bucket"] = bank_status_for_single_reading(bs.get(status_q), n=r["n_clfs"] or 1)
@@ -1126,7 +1140,7 @@ def build_group_dfs_for_quarter(q, flat_by_q=None, block_series=None, district_s
 
     district_rows = []
     for d, sub in flat.groupby("district"):
-        r = agg_unit_for_quarter(sub, "district", d)
+        r = agg_unit_for_quarter(sub, "district", d, caps=caps)
         r["district_geo_id"] = DISTRICT_ALIAS.get(str(d).strip().upper(), str(d).strip().upper())
         ds = district_series["bank_balance"].loc[d]
         r["bank_balance_bucket"] = bank_status_for_single_reading(ds.get(status_q), n=r["n_clfs"] or 1)
@@ -1153,7 +1167,7 @@ def build_group_dfs_for_quarter(q, flat_by_q=None, block_series=None, district_s
     district_df["overall_state_n"] = district_df["overall_score"].notna().sum()
     add_group_rank(block_df, "district", "district")
 
-    state_row = agg_unit_for_quarter(flat, "state", "Bihar")
+    state_row = agg_unit_for_quarter(flat, "state", "Bihar", caps=caps)
     ss = state_series["bank_balance"]
     state_row["bank_balance_bucket"] = bank_status_for_single_reading(ss.get(status_q), n=state_row["n_clfs"] or 1)
 
