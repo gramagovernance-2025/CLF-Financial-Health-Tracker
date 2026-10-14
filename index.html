@@ -70,6 +70,7 @@ h1{ font-size:clamp(22px,4vw,30px); margin:0 0 4px; font-weight:600; }
 .tab-btn{ font-family:inherit; font-size:14px; font-weight:600; padding:8px 18px; border:none; border-radius:7px; background:transparent; color:var(--ink-soft); cursor:pointer; transition:background .15s,color .15s; }
 .tab-btn.active{ background:var(--primary); color:#fff; }
 .tab-btn:not(.active):hover{ background:var(--line); }
+.coverage-banner{ margin-top:10px; padding:10px 14px; background:var(--low-soft); border:1px solid var(--low); border-radius:8px; color:var(--low); font-size:13px; font-weight:600; line-height:1.5; width:100%; box-sizing:border-box; }
 section{ margin-top:30px; }
 .section-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:12px; flex-wrap:wrap; gap:8px; }
 .section-head h2{ font-size:20px; font-weight:600; margin:0; }
@@ -306,12 +307,32 @@ function periodFor(dataObj, tab){
   return (dataObj[key] || {})[CURRENT_QUARTER] || {};
 }
 
+// Coverage banner (2026-10-14): the LokOS scrape (specifically
+// LoanRequests, the binding constraint on OTR/UPTO) currently only
+// covers a handful of districts, so the LokOS tab's state-level
+// numbers and the Comparison tab (which is restricted to just these
+// districts - see build_tracker_data.py) need a visible caveat rather
+// than silently looking like complete statewide figures. Reads the
+// district list from manifest.json (lokos_covered_districts) instead
+// of a hardcoded count/range, so this banner stays correct automatically
+// as scraping coverage grows, with no HTML edit needed.
+function coverageBannerHtml(){
+  if(CURRENT_TAB !== 'lokos' && CURRENT_TAB !== 'comparison') return '';
+  const districts = (MANIFEST && MANIFEST.lokos_covered_districts) || [];
+  if(!districts.length) return '';
+  const n = districts.length, first = districts[0], last = districts[districts.length-1];
+  const msg = CURRENT_TAB === 'lokos'
+    ? `This tab is populated with data for only ${n} districts, from ${first} to ${last}. The LokOS scrape is currently ongoing — coverage will expand as more districts are scraped.`
+    : `This tab is populated with data for only ${n} districts, from ${first} to ${last} — the districts where LokOS data is available. Although Audit data exists for all districts, this tab uses Audit data only for these ${n} districts so the comparison is apples-to-apples. The LokOS scrape is currently ongoing.`;
+  return `<div class="coverage-banner">${msg}</div>`;
+}
+
 function tabSwitcherHtml(){
   return `<div class="tab-switcher">
     <button class="tab-btn ${CURRENT_TAB==='audit'?'active':''}" data-tab="audit">Audit</button>
     <button class="tab-btn ${CURRENT_TAB==='lokos'?'active':''}" data-tab="lokos">LokOS</button>
     <button class="tab-btn ${CURRENT_TAB==='comparison'?'active':''}" data-tab="comparison">Comparison</button>
-  </div>`;
+  </div>${coverageBannerHtml()}`;
 }
 function wireTabSwitcher(){
   document.querySelectorAll('.tab-btn').forEach(btn=>{
@@ -1042,17 +1063,27 @@ function standingCardsHtml(row, scopes){
 // comparison (every indicator + Overall, across whichever peer-group
 // tiers are meaningful at this SCOPE).
 // ============================================================================
-const COMPARISON_INDS = Object.keys(IND_BY_KEY);
-// Disb %/Amount are mirrored onto BOTH tabs from the same underlying
-// field (build_tracker_data.py's clf_full_lokos copies clf_full's
-// disb_pct/disb_amount directly, never recomputes them) - was F05-
-// sourced on both sides, now the audit-native CLF Audit Entry
-// scrape's loan_demand/disbursed amount (2026-10-12), but still THE
-// SAME figure on both tabs either way. They'll always show zero
-// delta, which isn't a real cross-check, so the delta/agreement-flag
-// columns are suppressed for these two rather than implying an
-// agreement that was never independently measured.
-const SAME_SOURCE_INDS = new Set(['disb_pct', 'disb_amount']);
+// disb_pct excluded (2026-10-14): LokOS has no independent
+// reconstruction for it (tried dividing LokOS disb_amount by the
+// audit's own loan_demand_amount, but the result was implausible for
+// nearly every CLF - see build_tracker_data.py), so it's always null
+// on the LokOS side. A comparison row with only one real column isn't
+// a comparison, so it's dropped from this tab entirely rather than
+// shown with a blank LokOS column - it still appears normally on the
+// Audit tab, where its value is real.
+const COMPARISON_INDS = Object.keys(IND_BY_KEY).filter(k => k !== 'disb_pct');
+// Disb %/Amount USED to be mirrored onto both tabs from the same
+// underlying field (clf_full_lokos copied clf_full's disb_pct/
+// disb_amount directly, never recomputed them) - true from 2026-10-12
+// through 2026-10-13. As of 2026-10-14, LokOS disb_amount is
+// independently reconstructed from LoanRequests' own loanAmount field,
+// and LokOS disb_pct divides that independent amount by the audit's
+// own loan_demand_amount (shared denominator, since LoanRequests has
+// no demand figure of its own - see build_tracker_data.py). Both are
+// now genuinely comparable, not a guaranteed-zero delta, so this set
+// is empty rather than removed outright - kept in case a future
+// indicator ever needs the same "nothing to compare" treatment.
+const SAME_SOURCE_INDS = new Set([]);
 
 function agreementFlag(a, b){
   if(a==null || b==null) return null;
@@ -1095,7 +1126,8 @@ function comparisonValueTableHtml(auditRow, lokosRow){
 }
 
 function comparisonRankTableHtml(auditRow, lokosRow, compiledRow, scope){
-  const inds = COMPOSITE.concat(['overall']);
+  // disb_pct excluded here too - see COMPARISON_INDS above for why.
+  const inds = COMPOSITE.filter(k => k !== 'disb_pct').concat(['overall']);
   const rankCell = (row, ind) => {
     const rank = row ? row[`${ind}_${scope}_rank`] : null;
     const n = row ? row[`${ind}_${scope}_n`] : null;
@@ -1143,7 +1175,18 @@ const COMPARISON_SCOPE_OPTIONS_BY_LEVEL = {
   state: [],
 };
 function comparisonSectionHtml(dataObj, level){
-  const auditRow = periodFor(dataObj, 'audit');
+  // At state scope specifically, the Audit tab's own value (periodFor
+  // 'audit') is a genuine statewide-38-district average - correct for
+  // the Audit tab, but shown next to LokOS's value (restricted to the
+  // LokOS-covered districts) it's an apples-to-oranges comparison
+  // (2026-10-14 correction). state.json carries a separate
+  // comparison_audit_by_period computed over the SAME restricted
+  // population as LokOS, for this table only - district/block/CLF
+  // scope don't need this, since Table 1 there is already a single
+  // unit's own value, not a population aggregate.
+  const auditRow = (level === 'state' && dataObj.comparison_audit_by_period)
+    ? (dataObj.comparison_audit_by_period[CURRENT_QUARTER] || {})
+    : periodFor(dataObj, 'audit');
   const lokosRow = periodFor(dataObj, 'lokos');
   const compiledRow = periodFor(dataObj, 'compiled');
 

@@ -467,7 +467,7 @@ f01["mis_id"] = f01["mis_id"].astype(int)
 # OSS = operating income / operating expense, reusing f01_xwalk (a
 # generic district+CLF-name -> mis_id map, not F01-specific despite
 # the name) for the same exact-match approach as F01.
-F03_DIR = Path("/Users/mohanrajagopal/Dropbox/Bihar Gates Team/3_Jeevika/6_LokOS_Analysis/2_Data/Raw Files/F03 Receipts & Payments")
+F03_DIR = Path("/Users/mohanrajagopal/Dropbox/LokOS_F03_ReceiptPayment_Reports")  # real location confirmed 2026-10-14 - the old 2_Data/Raw Files path was a stale/abandoned folder, permanently empty
 F03_QUARTER_MAP = {
     ("2025 - 2026", "Q4 (Jan-Mar)"): "FY25-26 Q4",
     ("2026 - 2027", "Q1 (Apr-Jun)"): "FY26-27 Q1",
@@ -561,14 +561,28 @@ req = pd.concat([pd.read_csv(f, encoding="utf-8-sig") for f in req_files], ignor
 if len(req):
     req["installment_num"] = req["installment"].apply(parse_rs)
     req["due_date"] = pd.to_datetime(req["dueDate"], format="%d-%m-%Y", errors="coerce")
+    req["loan_amount_num"] = req["loanAmount"].apply(parse_rs)
+    req["disb_date"] = pd.to_datetime(req["disbursementDate"], format="%d-%m-%Y", errors="coerce")
     req["dist_u"] = req["district"].astype(str).str.strip().str.upper()
     req["clf_u"] = req["clf"].astype(str).str.strip().str.upper()
     req = req.merge(f01_xwalk, on=["dist_u", "clf_u"], how="left")
     print(f"LoanRequests match (for LokOS OTR/UPTO demand side): {req['mis_id'].notna().sum()}/{len(req)} rows matched.")
+    # req_loans (2026-10-14, for LokOS disb_amount below): loanAmount/
+    # disb_date are loan-level fields repeated on every installment row
+    # of that loan (confirmed directly against the raw data: loanNo=2
+    # in ARARIA shows the identical loanAmount/disbursementDate on all
+    # 18 of its installment rows) - deduped to one row per (mis_id,
+    # loanNo) here, BEFORE the installment-level dropna just below
+    # narrows req to rows with a valid due_date/installment, since a
+    # loan's amount/disbursement fields don't depend on any single
+    # installment row being valid.
+    req_loans = req.dropna(subset=["mis_id", "loan_amount_num", "disb_date"]).drop_duplicates(subset=["mis_id", "loanNo"], keep="first").copy()
+    req_loans["mis_id"] = req_loans["mis_id"].astype(int)
     req = req.dropna(subset=["mis_id", "installment_num", "due_date"]).copy()
     req["mis_id"] = req["mis_id"].astype(int)
 else:
     print("LoanRequests: no raw files found - LokOS OTR/UPTO demand side will be entirely null.")
+    req_loans = pd.DataFrame()
 
 # Grouped once (not filtered per-CLF in a loop) - with real statewide
 # coverage this could be 100k+ rows, and 1667 CLFs x a full-dataframe
@@ -620,6 +634,38 @@ for mis_id in _relevant_clfs:
     lokos_otr_num_by_clf[mis_id] = otr_num_q
     lokos_otr_den_by_clf[mis_id] = otr_den_q
 print(f"Computed LokOS OTR/UPTO reconstruction for {len(_relevant_clfs)} CLFs (have recovery and/or demand data).")
+
+# ---------------------------------------------------------------- LokOS reconstruction: disb_amount from LoanRequests
+# Sum of each loan's own loanAmount (one row per loan, via req_loans's
+# dedupe above) for every loan disbursed on or before the end of a
+# given quarter - "cumulative-since-inception" at each quarter, the
+# same semantic disb_amount already has on the audit side (each
+# quarter's value already encompasses every prior quarter - the
+# "cumulative" period derivation in build_flat_for_quarter reuses this
+# directly via latest_available(), no extra summing needed here).
+#
+# disb_pct deliberately has NO LokOS-side reconstruction (2026-10-14,
+# explicit decision after trying it): dividing this disb_amount by the
+# audit's own loan_demand_amount produced an implausible result for
+# nearly every CLF (median ~1500%, 95/98 over 100%) - the two figures
+# turned out not to be comparable at the same scale even though each is
+# individually real. LokOS disb_pct is left entirely unset (null on
+# every CLF) rather than shipping a ratio that doesn't hold up, and is
+# excluded from the Comparison tab's indicator lists altogether (see
+# COMPARISON_INDS/table2 inds in index.html) rather than shown blank,
+# since a comparison row with only one real column isn't a comparison.
+lokos_disb_amount_by_clf = {}
+if len(req_loans):
+    loans_by_clf = {mis_id: g for mis_id, g in req_loans.groupby("mis_id")}
+    for mis_id, g in loans_by_clf.items():
+        amt_q = {}
+        for period in QUARTERS:
+            _, hi = QUARTER_DATE_RANGES[period]
+            amt_q[period] = round(float(g[g["disb_date"] <= hi]["loan_amount_num"].sum()), 2)
+        lokos_disb_amount_by_clf[mis_id] = amt_q
+    print(f"Computed LokOS disb_amount reconstruction for {len(loans_by_clf)} CLFs (real loan-level LoanRequests data).")
+else:
+    print("LoanRequests: no deduped loan-level rows - LokOS disb_amount will be entirely null.")
 
 MONTH_NAME_TO_NUM = {"January": "01", "February": "02", "March": "03", "April": "04", "May": "05",
                       "June": "06", "July": "07", "August": "08", "September": "09"}
@@ -758,11 +804,36 @@ for _, row in clf_df.iterrows():
     rec["lokos_upto"] = {q: (lokos_upto_by_clf.get(mis_id, {}) or {}).get(q) for q in QUARTERS}
     rec["_lokos_otr_num"] = {q: (lokos_otr_num_by_clf.get(mis_id, {}) or {}).get(q) for q in QUARTERS}
     rec["_lokos_otr_den"] = {q: (lokos_otr_den_by_clf.get(mis_id, {}) or {}).get(q) for q in QUARTERS}
+    rec["lokos_disb_amount"] = {q: (lokos_disb_amount_by_clf.get(mis_id, {}) or {}).get(q) for q in QUARTERS}
+    # disb_pct has no LokOS reconstruction (see note above) - left null
+    # on every CLF/period, and excluded from the Comparison tab's
+    # indicator lists entirely in index.html rather than shown blank.
+    rec["lokos_disb_pct"] = {q: None for q in QUARTERS}
 
     records.append(rec)
 
 clf_full = pd.DataFrame(records)
 print(f"Assembled real per-CLF records for {len(clf_full)} CLFs.")
+
+# LokOS-tab district coverage (2026-10-14): LoanRequests is the binding
+# constraint on which districts have real LokOS OTR/UPTO data - F01 and
+# F03 are both statewide-complete, and LoanRepayments covers more
+# districts than LoanRequests, but a district needs ALL of F01/F03/
+# LoanRepayments/LoanRequests for a usable LokOS reading, so LoanRequests
+# coverage alone determines the covered set. Derived directly from the
+# data (which districts have at least one CLF with a real lokos_otr
+# value) rather than hardcoded, so this stays correct as scraping
+# coverage grows with no code change needed - confirmed this resolves
+# to exactly the 10 real LoanRequests districts (Araria, Arwal,
+# Aurangabad, Banka, Begusarai, Bhagalpur, Bhojpur, Buxar, Darbhanga,
+# Jehanabad) as of this date.
+LOKOS_COVERED_DISTRICTS = set(
+    clf_full.loc[
+        clf_full["lokos_otr"].apply(lambda d: any(v is not None for v in d.values())),
+        "district",
+    ].str.strip().str.upper()
+)
+print(f"LokOS tab: {len(LOKOS_COVERED_DISTRICTS)} districts have real LoanRequests-backed OTR/UPTO data: {sorted(LOKOS_COVERED_DISTRICTS)}")
 
 # ---------------------------------------------------------------- percentile helper
 def pctl(series, lower_is_better=False):
@@ -968,16 +1039,23 @@ print("Computed CLF-level percentiles + block/district/state ranks, per period (
 # aggregation below) completely unchanged, pointed at a second
 # clf_full-shaped dataframe built from the lokos_* fields instead of
 # the audit ones. Today this will mostly rank on near-empty OSS/OTR/
-# UPTO (the underlying scrapes are still patchy) and disb_pct/
-# disb_amount (identical to the audit tab, since that's genuinely the
-# same source either way) - the moment LoanRepayments/LoanRequests/F03
-# coverage grows, this produces a real, independently-ranked LokOS
+# UPTO (the underlying scrapes are still patchy). disb_amount is now
+# independently reconstructed too (2026-10-14): summed loanAmount from
+# LoanRequests' own loan-level fields (see "LokOS reconstruction:
+# disb_amount" above) - genuinely LokOS-sourced, not a mirror. disb_pct
+# has no LokOS reconstruction at all (tried dividing by the audit's own
+# loan_demand_amount as a shared denominator, but the result was
+# implausible for nearly every CLF - see that section's comment) - it's
+# always null here, and the Comparison tab excludes it from its
+# indicator lists entirely rather than showing a one-column non-
+# comparison. The moment LoanRepayments/LoanRequests/F03 coverage
+# grows, this produces a more complete, independently-ranked LokOS
 # Overall Score with no further code changes.
 clf_full_lokos = pd.DataFrame({
     "mis_id": clf_full["mis_id"], "clf_name": clf_full["clf_name"],
     "district": clf_full["district"], "block": clf_full["block"], "block_id": clf_full["block_id"],
     "oss": clf_full["lokos_oss"], "otr": clf_full["lokos_otr"], "upto": clf_full["lokos_upto"],
-    "disb_pct": clf_full["disb_pct"], "disb_amount": clf_full["disb_amount"],
+    "disb_pct": clf_full["lokos_disb_pct"], "disb_amount": clf_full["lokos_disb_amount"],
     "cash_balance": clf_full["lokos_cash_balance_q"], "bank_balance": clf_full["lokos_bank_balance_q"],
     "idle_funds": clf_full["lokos_idle_funds_q"],
     "bank_status_q": clf_full["lokos_bank_status_q"], "bank_status_latest": clf_full["lokos_bank_status_latest"],
@@ -1121,7 +1199,7 @@ district_series_lookup_lokos = group_series_lookup(["district"], source=clf_full
 state_series_lookup_lokos = group_series_lookup(None, source=clf_full_lokos, include_monthly=False)
 
 
-def build_group_dfs_for_quarter(q, flat_by_q=None, block_series=None, district_series=None, state_series=None):
+def build_group_dfs_for_quarter(q, flat_by_q=None, block_series=None, district_series=None, state_series=None, state_district_filter=None):
     flat = (flat_by_q if flat_by_q is not None else FLAT_BY_Q)[q]
     block_series = block_series if block_series is not None else block_series_lookup
     district_series = district_series if district_series is not None else district_series_lookup
@@ -1167,9 +1245,31 @@ def build_group_dfs_for_quarter(q, flat_by_q=None, block_series=None, district_s
     district_df["overall_state_n"] = district_df["overall_score"].notna().sum()
     add_group_rank(block_df, "district", "district")
 
-    state_row = agg_unit_for_quarter(flat, "state", "Bihar", caps=caps)
-    ss = state_series["bank_balance"]
-    state_row["bank_balance_bucket"] = bank_status_for_single_reading(ss.get(status_q), n=state_row["n_clfs"] or 1)
+    # state_district_filter (2026-10-14): the LokOS tab's state-level
+    # row is restricted to LOKOS_COVERED_DISTRICTS so a statewide "Bihar"
+    # average isn't silently diluted by ~28 districts that have zero
+    # LokOS data at all (they'd just contribute NaNs that get dropped
+    # per-indicator, but n_clfs/n_total and the implied "statewide"
+    # framing would still be misleading) - block_df/district_df above
+    # are NOT filtered, so every district still shows up with whatever
+    # LokOS data it actually has, "-" where it doesn't, same as always.
+    state_flat = flat
+    state_caps = caps
+    if state_district_filter is not None:
+        state_flat = flat[flat["district"].str.strip().str.upper().isin(state_district_filter)]
+        state_caps = {ind: state_flat[ind].dropna().quantile(q_) for ind, q_ in WINSORIZE_TOP_PCT.items() if state_flat[ind].notna().any()}
+    state_row = agg_unit_for_quarter(state_flat, "state", "Bihar", caps=state_caps)
+    if state_district_filter is not None:
+        # state_series["bank_balance"] is pre-aggregated over ALL
+        # districts with no per-district breakdown to filter after the
+        # fact - but bank_balance is in SUM_INDS, so state_row's own
+        # "bank_balance" (summed from the already-filtered state_flat
+        # above) is exactly the same quantity ss.get(status_q) would
+        # have given, just correctly restricted to the covered districts.
+        state_row["bank_balance_bucket"] = bank_status_for_single_reading(state_row.get("bank_balance"), n=state_row["n_clfs"] or 1)
+    else:
+        ss = state_series["bank_balance"]
+        state_row["bank_balance_bucket"] = bank_status_for_single_reading(ss.get(status_q), n=state_row["n_clfs"] or 1)
 
     return block_df, district_df, state_row
 
@@ -1183,10 +1283,27 @@ BLOCK_BY_Q_LOKOS, DISTRICT_BY_Q_LOKOS, STATE_BY_Q_LOKOS = {}, {}, {}
 for q in PERIOD_KEYS:
     b_df, d_df, s_row = build_group_dfs_for_quarter(
         q, flat_by_q=FLAT_BY_Q_LOKOS, block_series=block_series_lookup_lokos,
-        district_series=district_series_lookup_lokos, state_series=state_series_lookup_lokos)
+        district_series=district_series_lookup_lokos, state_series=state_series_lookup_lokos,
+        state_district_filter=LOKOS_COVERED_DISTRICTS)
     BLOCK_BY_Q_LOKOS[q], DISTRICT_BY_Q_LOKOS[q], STATE_BY_Q_LOKOS[q] = b_df, d_df, s_row
 print(f"Aggregated LokOS-tab {len(BLOCK_BY_Q_LOKOS[LATEST_Q])} blocks, {len(DISTRICT_BY_Q_LOKOS[LATEST_Q])} districts, 1 state, per period.")
 print(f"Aggregated {len(BLOCK_BY_Q[LATEST_Q])} blocks, {len(DISTRICT_BY_Q[LATEST_Q])} districts, 1 state, per period.")
+
+# Audit-side state row restricted to LOKOS_COVERED_DISTRICTS, for the
+# Comparison tab ONLY (2026-10-14, explicit correction) - the Audit TAB
+# itself must stay genuinely statewide (STATE_BY_Q above, unchanged),
+# but the Comparison tab's state-level "Audit value" was being read
+# from that same full-38-district row and shown next to LokOS's value
+# (already restricted to 9) - an apples-to-oranges comparison at
+# exactly the state level (district/block/CLF Table 1 values are
+# already unit-specific, so this mixing only happens at state scope).
+# block_df/district_df from this call are discarded - only state_row
+# is used; cheap enough to recompute, keeps this a one-line reuse of
+# the exact same function rather than a second bespoke aggregator.
+STATE_BY_Q_AUDIT_FOR_COMPARISON = {}
+for q in PERIOD_KEYS:
+    _, _, s_row = build_group_dfs_for_quarter(q, state_district_filter=LOKOS_COVERED_DISTRICTS)
+    STATE_BY_Q_AUDIT_FOR_COMPARISON[q] = s_row
 
 # ---------------------------------------------------------------- Comparison tab: compiled (blended) ranking
 # Third "Comparison" tab (2026-10-05, design agreed, now implemented at
@@ -1210,6 +1327,12 @@ def _blend_pctl(a, b):
 def build_compiled_clf(q):
     af = FLAT_BY_Q[q][["mis_id", "clf_name", "district", "block", "block_id"] +
                        [f"{i}_state_pctl" for i in COMPOSITE_INDICATORS]].copy()
+    # Comparison tab restricted to the 10 LokOS-covered districts
+    # (2026-10-14, explicit decision): even though audit data exists for
+    # all 38 districts, comparing against an audit-only fallback outside
+    # the covered set isn't a real audit-vs-LokOS comparison - it's just
+    # the audit number alone, which belongs on the Audit tab, not here.
+    af = af[af["district"].str.strip().str.upper().isin(LOKOS_COVERED_DISTRICTS)]
     lf = FLAT_BY_Q_LOKOS[q][["mis_id"] + [f"{i}_state_pctl" for i in COMPOSITE_INDICATORS]].copy()
     lf = lf.rename(columns={f"{i}_state_pctl": f"{i}__lokos" for i in COMPOSITE_INDICATORS})
     af = af.rename(columns={f"{i}_state_pctl": f"{i}__audit" for i in COMPOSITE_INDICATORS})
@@ -1235,11 +1358,18 @@ def _add_compiled_ranks(df, group_col, prefix):
             df[f"{ind}_{prefix}_rank"] = df[col].rank(ascending=False, method="min")
             df[f"{ind}_{prefix}_n"] = df[col].notna().sum()
 
-def build_compiled_group(audit_df, lokos_df, join_cols, group_col=None):
+def build_compiled_group(audit_df, lokos_df, join_cols, group_col=None, district_col="district"):
     """Same blending pattern as build_compiled_clf, generalized for
     block-level (join on district+name, rank within district + state)
     and district-level (join on name, rank within state only - no
-    block scope above a district)."""
+    block scope above a district).
+
+    district_col names whichever column in audit_df actually holds the
+    district name - "district" for blocks, but "name" itself for the
+    district-level call (DISTRICT_BY_Q's own district-name column) -
+    used to restrict the Comparison tab to the 10 LokOS-covered
+    districts only, same reasoning as build_compiled_clf above."""
+    audit_df = audit_df[audit_df[district_col].str.strip().str.upper().isin(LOKOS_COVERED_DISTRICTS)]
     a = audit_df[join_cols + [f"{i}_state_pctl" for i in COMPOSITE_INDICATORS]].copy()
     l = lokos_df[join_cols + [f"{i}_state_pctl" for i in COMPOSITE_INDICATORS]].copy()
     l = l.rename(columns={f"{i}_state_pctl": f"{i}__lokos" for i in COMPOSITE_INDICATORS})
@@ -1255,8 +1385,8 @@ def build_compiled_group(audit_df, lokos_df, join_cols, group_col=None):
     return merged
 
 COMPILED_CLF_BY_Q = {q: build_compiled_clf(q) for q in PERIOD_KEYS}
-COMPILED_BLOCK_BY_Q = {q: build_compiled_group(BLOCK_BY_Q[q], BLOCK_BY_Q_LOKOS[q], ["district", "name"], "district") for q in PERIOD_KEYS}
-COMPILED_DISTRICT_BY_Q = {q: build_compiled_group(DISTRICT_BY_Q[q], DISTRICT_BY_Q_LOKOS[q], ["name"]) for q in PERIOD_KEYS}
+COMPILED_BLOCK_BY_Q = {q: build_compiled_group(BLOCK_BY_Q[q], BLOCK_BY_Q_LOKOS[q], ["district", "name"], "district", district_col="district") for q in PERIOD_KEYS}
+COMPILED_DISTRICT_BY_Q = {q: build_compiled_group(DISTRICT_BY_Q[q], DISTRICT_BY_Q_LOKOS[q], ["name"], district_col="name") for q in PERIOD_KEYS}
 print("Computed compiled (audit+LokOS blended) percentiles/ranks for the Comparison tab, at CLF/block/district level.")
 
 for q in PERIOD_KEYS:
@@ -1281,6 +1411,20 @@ def slugify(s):
     return re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-")
 
 
+def _first_row_or_blank(df, mask):
+    """df[mask].iloc[0], or an all-NaN row with the same columns if
+    nothing matched. Needed 2026-10-14: COMPILED_BLOCK_BY_Q/
+    COMPILED_DISTRICT_BY_Q are now restricted to the LokOS-covered
+    districts, so a block/district outside that set has no row there -
+    a bare .iloc[0] would raise IndexError instead of just meaning
+    "no compiled data for this unit yet", same as any other missing
+    value in this file."""
+    sub = df[mask]
+    if len(sub):
+        return sub.iloc[0]
+    return pd.Series({c: np.nan for c in df.columns})
+
+
 (OUT / "clfs").mkdir(parents=True, exist_ok=True)
 (OUT / "blocks").mkdir(parents=True, exist_ok=True)
 (OUT / "districts").mkdir(parents=True, exist_ok=True)
@@ -1295,7 +1439,14 @@ def slugify(s):
 # pick up more coverage automatically as those scrapes complete, with
 # no further code changes needed here.
 FLAT_BY_Q_LOKOS_INDEXED = {q: FLAT_BY_Q_LOKOS[q].set_index("mis_id") for q in PERIOD_KEYS}
-COMPILED_CLF_BY_Q_INDEXED = {q: COMPILED_CLF_BY_Q[q].set_index("mis_id") for q in PERIOD_KEYS}
+# reindex against every CLF (not just the ones COMPILED_CLF_BY_Q
+# actually has) - 2026-10-14: COMPILED_CLF_BY_Q is now restricted to
+# the LokOS-covered districts (see build_compiled_clf above), so a CLF
+# outside that set has no row there at all. reindex() fills those with
+# NaN across every column rather than the .loc[mis_id] lookup below
+# raising KeyError, so excluded CLFs get the normal all-"-" compiled
+# payload instead of crashing the build.
+COMPILED_CLF_BY_Q_INDEXED = {q: COMPILED_CLF_BY_Q[q].set_index("mis_id").reindex(clf_full["mis_id"]) for q in PERIOD_KEYS}
 
 for _, series_row in clf_full.iterrows():
     mis_id = series_row["mis_id"]
@@ -1350,7 +1501,7 @@ for district, name in sorted(_all_block_names):
         lokos_by_period[q] = lentry
 
         cbdf = COMPILED_BLOCK_BY_Q[q]
-        crow = cbdf[(cbdf["district"] == district) & (cbdf["name"] == name)].iloc[0]
+        crow = _first_row_or_blank(cbdf, (cbdf["district"] == district) & (cbdf["name"] == name))
         csub_clfs = COMPILED_CLF_BY_Q[q][(COMPILED_CLF_BY_Q[q]["district"] == district) & (COMPILED_CLF_BY_Q[q]["block"] == name)]
         centry = clean(crow.to_dict())
         centry["clfs"] = clean(csub_clfs.sort_values("overall_score", ascending=False, na_position="last").to_dict("records"))
@@ -1387,7 +1538,7 @@ for district_name in sorted(clf_df["district"].unique()):
         lokos_by_period[q] = lentry
 
         cddf = COMPILED_DISTRICT_BY_Q[q]
-        crow = cddf[cddf["name"] == district_name].iloc[0]
+        crow = _first_row_or_blank(cddf, cddf["name"] == district_name)
         csub_blocks = COMPILED_BLOCK_BY_Q[q][COMPILED_BLOCK_BY_Q[q]["district"] == district_name]
         csub_clfs = COMPILED_CLF_BY_Q[q][COMPILED_CLF_BY_Q[q]["district"] == district_name]
         centry = clean(crow.to_dict())
@@ -1405,6 +1556,7 @@ for district_name in sorted(clf_df["district"].unique()):
 state_by_period = {}
 lokos_state_by_period = {}
 compiled_state_by_period = {}
+comparison_audit_state_by_period = {}
 for q in PERIOD_KEYS:
     row = dict(STATE_BY_Q[q])
     row.pop("series")
@@ -1423,13 +1575,23 @@ for q in PERIOD_KEYS:
     lentry["bottom_clfs"] = clean(lscored_clfs.sort_values("overall_score", ascending=True).head(10).to_dict("records"))
     lokos_state_by_period[q] = lentry
 
+    # Comparison-tab-only audit row (2026-10-14): same shape as `row`
+    # above but restricted to LOKOS_COVERED_DISTRICTS, so the Comparison
+    # tab's state-level Table 1 can show an audit value computed over
+    # the SAME population as LokOS's, rather than the Audit tab's own
+    # genuinely-statewide `row`. The Audit tab (state_by_period, entry
+    # above) is untouched and stays full-38-district.
+    car = dict(STATE_BY_Q_AUDIT_FOR_COMPARISON[q])
+    car.pop("series", None)
+    comparison_audit_state_by_period[q] = clean(car)
+
     # No peer group at state scope (a single state has nothing to rank
     # against), so "compiled" at this level is just the blended overall
     # score itself, not a rank - the real content for the Comparison
     # tab's Table 2 at state scope is the compiled DISTRICT ranking below.
-    centry = {"overall_score": round(_safe_sum([row.get("overall_score"), lrow.get("overall_score")]) / 2, 1)
-              if row.get("overall_score") is not None and lrow.get("overall_score") is not None
-              else (row.get("overall_score") if row.get("overall_score") is not None else lrow.get("overall_score"))}
+    centry = {"overall_score": round(_safe_sum([car.get("overall_score"), lrow.get("overall_score")]) / 2, 1)
+              if car.get("overall_score") is not None and lrow.get("overall_score") is not None
+              else (car.get("overall_score") if car.get("overall_score") is not None else lrow.get("overall_score"))}
     centry["districts"] = clean(COMPILED_DISTRICT_BY_Q[q].sort_values("overall_score", ascending=False, na_position="last").to_dict("records"))
     cscored_clfs = COMPILED_CLF_BY_Q[q].dropna(subset=["overall_score"])
     centry["top_clfs"] = clean(cscored_clfs.sort_values("overall_score", ascending=False).head(10).to_dict("records"))
@@ -1440,6 +1602,7 @@ state_payload = {"level": "state", "name": "Bihar",
                   "quarters": QUARTERS, "months": MONTHS, "quarter_months": QUARTER_MONTHS, "latest_quarter": LATEST_Q,
                   "by_period": state_by_period, "lokos_by_period": lokos_state_by_period,
                   "compiled_by_period": compiled_state_by_period,
+                  "comparison_audit_by_period": comparison_audit_state_by_period,
                   "series": clean(STATE_BY_Q[LATEST_Q]["series"])}
 (OUT / "state.json").write_text(json.dumps(state_payload))
 
@@ -1465,6 +1628,14 @@ for d in sorted(clf_df["district"].unique()):
         clfs_out = FLAT_BY_Q[LATEST_Q][(FLAT_BY_Q[LATEST_Q]["district"] == d) & (FLAT_BY_Q[LATEST_Q]["block"] == b)][["mis_id", "clf_name"]].to_dict("records")
         blocks_out.append({"name": b, "slug": f"{slugify(d)}__{slugify(b)}", "clfs": clfs_out})
     manifest_out["districts"].append({"name": d, "slug": slugify(d), "blocks": blocks_out})
+# Display-case district names for the LokOS/Comparison tab coverage
+# banners (index.html) - sourced from here rather than hardcoded in the
+# frontend so the banner text stays correct automatically as LokOS
+# scraping coverage grows, with no HTML edit needed.
+manifest_out["lokos_covered_districts"] = sorted(
+    d for d in clf_df["district"].unique()
+    if str(d).strip().upper() in LOKOS_COVERED_DISTRICTS
+)
 (OUT / "manifest.json").write_text(json.dumps(clean(manifest_out)))
 
 summary = {
