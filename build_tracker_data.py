@@ -1456,11 +1456,22 @@ for _, series_row in clf_full.iterrows():
     by_period = {}
     lokos_by_period = {}
     compiled_by_period = {}
+    district = series_row["district"]
     for q in PERIOD_KEYS:
         r = FLAT_BY_Q[q].set_index("mis_id").loc[mis_id].to_dict()
         by_period[q] = clean(r)
+        # clfs_in_district (2026-10-15): same district-wide CLF ranking
+        # shown at the parent Block's view - the CLF view is the bottom
+        # of the hierarchy, so it reuses that same table rather than
+        # ranking against an even narrower (and usually tiny) peer group.
+        by_period[q]["clfs_in_district"] = clean(
+            FLAT_BY_Q[q][FLAT_BY_Q[q]["district"] == district]
+            .sort_values("overall_score", ascending=False, na_position="last").to_dict("records"))
         lr = FLAT_BY_Q_LOKOS_INDEXED[q].loc[mis_id].to_dict()
         lokos_by_period[q] = clean(lr)
+        lokos_by_period[q]["clfs_in_district"] = clean(
+            FLAT_BY_Q_LOKOS[q][FLAT_BY_Q_LOKOS[q]["district"] == district]
+            .sort_values("overall_score", ascending=False, na_position="last").to_dict("records"))
         cr = COMPILED_CLF_BY_Q_INDEXED[q].loc[mis_id].to_dict()
         compiled_by_period[q] = clean(cr)
     series = {k: series_row[k] for k in
@@ -1491,6 +1502,14 @@ for district, name in sorted(_all_block_names):
         sub_clfs = FLAT_BY_Q[q][(FLAT_BY_Q[q]["district"] == district) & (FLAT_BY_Q[q]["block"] == name)]
         entry = clean(row.drop(labels=["series"]).to_dict())
         entry["clfs"] = clean(sub_clfs.sort_values("overall_score", ascending=False, na_position="last").to_dict("records"))
+        # clfs_in_district (2026-10-15): the Audit/LokOS tabs' own
+        # bottom-of-page ranking section ranks CLFs against the whole
+        # DISTRICT, not just this one block - a single block's CLF count
+        # is often too small to be a meaningful ranking peer group. Same
+        # data FLAT_BY_Q already has, just filtered one level broader
+        # than `entry["clfs"]` above (district only, not district+block).
+        district_clfs = FLAT_BY_Q[q][FLAT_BY_Q[q]["district"] == district]
+        entry["clfs_in_district"] = clean(district_clfs.sort_values("overall_score", ascending=False, na_position="last").to_dict("records"))
         by_period[q] = entry
 
         lbdf = BLOCK_BY_Q_LOKOS[q]
@@ -1498,6 +1517,8 @@ for district, name in sorted(_all_block_names):
         lsub_clfs = FLAT_BY_Q_LOKOS[q][(FLAT_BY_Q_LOKOS[q]["district"] == district) & (FLAT_BY_Q_LOKOS[q]["block"] == name)]
         lentry = clean(lrow.to_dict())
         lentry["clfs"] = clean(lsub_clfs.sort_values("overall_score", ascending=False, na_position="last").to_dict("records"))
+        ldistrict_clfs = FLAT_BY_Q_LOKOS[q][FLAT_BY_Q_LOKOS[q]["district"] == district]
+        lentry["clfs_in_district"] = clean(ldistrict_clfs.sort_values("overall_score", ascending=False, na_position="last").to_dict("records"))
         lokos_by_period[q] = lentry
 
         cbdf = COMPILED_BLOCK_BY_Q[q]

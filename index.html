@@ -136,6 +136,10 @@ tbody tr:hover{ background:var(--panel-alt); cursor:pointer; }
 tbody tr.me{ background:var(--primary-soft); font-weight:700; }
 .rank-cell{ font-family:"Iowan Old Style",Georgia,serif; font-size:16px; font-weight:700; color:var(--ink-soft); }
 .table-wrap{ overflow-x:auto; }
+.rank-line{ display:flex; align-items:baseline; justify-content:space-between; padding:10px 14px; background:var(--panel-alt); border-radius:8px; margin-top:8px; }
+.rank-line:first-child{ margin-top:0; }
+.rank-line-label{ font-size:13px; font-weight:600; color:var(--ink-soft); }
+.rank-line-value{ font-family:"Iowan Old Style",Georgia,serif; font-size:20px; font-weight:700; color:var(--primary); }
 .heatmap-select, .chart-select{ font-family:inherit; font-size:13px; padding:8px 10px; border-radius:8px; border:1px solid var(--line-strong); background:#fff; margin-bottom:14px; }
 .weight-btn{ appearance:none; cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; color:var(--primary); background:var(--primary-soft); border:1px solid var(--line-strong); border-radius:999px; padding:8px 16px; }
 .weight-modal-backdrop{ display:none; position:fixed; inset:0; background:rgba(30,35,32,0.45); z-index:100; align-items:center; justify-content:center; padding:20px; }
@@ -897,6 +901,70 @@ function refreshAllRankingTables(){
   });
 }
 
+// ============================================================================
+// Bottom-of-page ranking section, Audit/LokOS tabs only (2026-10-15)
+// State -> all districts (38 audit / however many LokOS covers).
+// District -> its own statewide rank, then its blocks ranked against
+//   each other. Block -> its rank within its district AND statewide,
+//   then CLFs ranked against the whole DISTRICT (a single block's CLF
+//   count is usually too small to be a meaningful peer group). CLF ->
+//   same district-wide CLF table (reused from the parent block, since
+//   CLF is the bottom of the hierarchy), with its own two ranks and
+//   its own row highlighted in the table.
+// ============================================================================
+function rankLineHtml(label, rank, n){
+  if(rank==null || n==null) return '';
+  return `<div class="rank-line"><span class="rank-line-label">${label}</span><span class="rank-line-value">#${rank} <span class="hint">of ${n}</span></span></div>`;
+}
+function rankingSectionConfig(dataObj, level){
+  const row = currentPeriod(dataObj);
+  if(level === 'state'){
+    // LokOS state ranking is capped to the real LokOS-covered districts
+    // (manifest.json's lokos_covered_districts) rather than all 38 -
+    // row.districts itself still carries all 38 (the regular heatmap/
+    // list elsewhere needs the full "-" convention), but a RANKING of
+    // mostly-null rows isn't meaningful, and the user explicitly asked
+    // for "only 9" here specifically (2026-10-15).
+    const covered = CURRENT_TAB === 'lokos' ? new Set(MANIFEST.lokos_covered_districts || []) : null;
+    const districtRows = covered ? (row.districts || []).filter(d => covered.has(d.name)) : (row.districts || []);
+    return {ranksHtml: '', tableRows: districtRows, tableId: 'rank-state-districts',
+            meId: null, idKey: 'name', nameKey: 'name', extraCols: [],
+            heading: 'District Ranking', hintCount: districtRows.length, hintUnit: 'districts'};
+  }
+  if(level === 'district'){
+    return {ranksHtml: rankLineHtml('District Rank (Statewide)', row.overall_state_rank, row.overall_state_n),
+            tableRows: row.blocks || [], tableId: 'rank-district-blocks',
+            meId: null, idKey: 'name', nameKey: 'name', extraCols: [],
+            heading: 'Block Ranking', hintCount: (row.blocks||[]).length, hintUnit: `blocks in ${dataObj.name}`};
+  }
+  if(level === 'block'){
+    return {ranksHtml: rankLineHtml(`Block Rank (within ${dataObj.district})`, row.overall_district_rank, row.overall_district_n)
+                      + rankLineHtml('Block Rank (Statewide)', row.overall_state_rank, row.overall_state_n),
+            tableRows: row.clfs_in_district || [], tableId: 'rank-block-clfs',
+            meId: null, idKey: 'mis_id', nameKey: 'clf_name', extraCols: [{key:'block', label:'Block'}],
+            heading: 'CLF Ranking', hintCount: (row.clfs_in_district||[]).length, hintUnit: `CLFs in ${dataObj.district}`};
+  }
+  // clf
+  return {ranksHtml: rankLineHtml(`CLF Rank (within ${dataObj.district})`, row.overall_district_rank, row.overall_district_n)
+                    + rankLineHtml('CLF Rank (Statewide)', row.overall_state_rank, row.overall_state_n),
+          tableRows: row.clfs_in_district || [], tableId: 'rank-clf-clfs',
+          meId: dataObj.mis_id, idKey: 'mis_id', nameKey: 'clf_name', extraCols: [{key:'block', label:'Block'}],
+          heading: 'CLF Ranking', hintCount: (row.clfs_in_district||[]).length, hintUnit: `CLFs in ${dataObj.district}`};
+}
+function rankingSectionHtml(dataObj, level){
+  const c = rankingSectionConfig(dataObj, level);
+  return `<section><div class="section-head"><h2 class="serif">${c.heading}</h2><span class="hint">${periodLabel(CURRENT_QUARTER)} &middot; ${c.hintCount} ${c.hintUnit}</span></div>
+    <div class="panel">
+      ${c.ranksHtml}
+      <div id="${c.tableId}-container" style="${c.ranksHtml?'margin-top:16px;':''}overflow-x:auto;">${rankingTableHtml(c.tableId, c.tableRows, c.meId, c.idKey, c.nameKey, c.extraCols, 'afterName')}</div>
+    </div></section>`;
+}
+function wireRankingSection(dataObj, level){
+  const c = rankingSectionConfig(dataObj, level);
+  const onRowClick = level === 'state' ? navToDistrict : level === 'district' ? navToBlock : navToClf;
+  wireSortableTable(c.tableId, `#${c.tableId}-container`, onRowClick);
+}
+
 // The State view's Top/Bottom 10 tables start out holding the fixed
 // 10+10 CLFs computed at build time under equal weights. Re-scoring
 // those same 20 rows (via refreshAllRankingTables above) isn't enough
@@ -1221,12 +1289,14 @@ async function showState(){
     ${tabSwitcherHtml()}
     ${isComparison ? comparisonSectionHtml(STATE_DATA, 'state') : `
       ${indicatorSectionsHtml(STATE_DATA, true)}
-      ${explorePlaceTimeHtml(true)}`}`;
+      ${explorePlaceTimeHtml(true)}
+      ${rankingSectionHtml(STATE_DATA, 'state')}`}`;
   wireTabSwitcher();
   if(isComparison){
     wireComparisonScopeToggle();
   } else {
     drawExploreSection(STATE_DATA, {rows:districts, geoLoader:loadGeoDistricts, geoIdKey:'district_name', labelKey:'name', rowIdKey:'district_geo_id', rowIdTransform:v=>v});
+    wireRankingSection(STATE_DATA, 'state');
   }
 }
 
@@ -1241,12 +1311,14 @@ async function showDistrict(){
     ${tabSwitcherHtml()}
     ${isComparison ? comparisonSectionHtml(DISTRICT_DATA, 'district') : `
       ${indicatorSectionsHtml(DISTRICT_DATA, true)}
-      ${explorePlaceTimeHtml(true)}`}`;
+      ${explorePlaceTimeHtml(true)}
+      ${rankingSectionHtml(DISTRICT_DATA, 'district')}`}`;
   wireTabSwitcher();
   if(isComparison){
     wireComparisonScopeToggle();
   } else {
     drawExploreSection(DISTRICT_DATA, {rows:blocks, geoLoader:loadGeoBlocks, geoIdKey:'block_id', labelKey:'name', rowIdKey:'block_id', rowIdTransform:v=>v});
+    wireRankingSection(DISTRICT_DATA, 'district');
   }
 }
 
@@ -1259,12 +1331,14 @@ async function showBlock(){
     ${tabSwitcherHtml()}
     ${isComparison ? comparisonSectionHtml(BLOCK_DATA, 'block') : `
       ${indicatorSectionsHtml(BLOCK_DATA, true)}
-      ${explorePlaceTimeHtml(false)}`}`;
+      ${explorePlaceTimeHtml(false)}
+      ${rankingSectionHtml(BLOCK_DATA, 'block')}`}`;
   wireTabSwitcher();
   if(isComparison){
     wireComparisonScopeToggle();
   } else {
     drawExploreSection(BLOCK_DATA, null);
+    wireRankingSection(BLOCK_DATA, 'block');
   }
 }
 
@@ -1282,12 +1356,14 @@ async function showClf(){
     <section><div class="section-head"><h2 class="serif">${CLF_DATA.clf_name}</h2><span class="hint">MIS ID ${CLF_DATA.mis_id} &middot; ${CLF_DATA.block}, ${CLF_DATA.district}</span></div>${CURRENT_TAB==='audit' ? clfDataGapNoteHtml(row) : ''}</section>
     ${isComparison ? comparisonSectionHtml(CLF_DATA, 'clf') : `
       ${indicatorSectionsHtml(CLF_DATA, false)}
-      ${explorePlaceTimeHtml(false)}`}`;
+      ${explorePlaceTimeHtml(false)}
+      ${rankingSectionHtml(CLF_DATA, 'clf')}`}`;
   wireTabSwitcher();
   if(isComparison){
     wireComparisonScopeToggle();
   } else {
     drawExploreSection(CLF_DATA, null);
+    wireRankingSection(CLF_DATA, 'clf');
   }
 }
 
